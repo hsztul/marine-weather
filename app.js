@@ -49,7 +49,7 @@ function parseZone(zoneContent) {
                 zone.forecast.push({ day: currentDay, details: forecastText.trim() });
                 forecastText = '';
             }
-            currentDay = line.split('...')[1].split('.')[0].trim();
+            currentDay = line.split('...')[0].replace('.', '').trim();
             forecastText += line.split('...')[1].trim() + ' ';
         } else if (currentDay) {
             forecastText += line.trim() + ' ';
@@ -82,7 +82,7 @@ function showZone(index) {
         ${zone.advisory ? `<p class="text-red-500 mb-4">${zone.advisory}</p>` : ''}
         ${zone.forecast.map(day => `
             <div class="mb-4">
-                <h3 class="text-xl font-semibold mb-2 capitalize">${day.day}</h3>
+                <h3 class="text-xl font-semibold mb-2 uppercase">${day.day}</h3>
                 <p class="whitespace-pre-wrap">${day.details}</p>
             </div>
         `).join('')}
