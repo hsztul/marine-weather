@@ -5,10 +5,17 @@ let forecastData = [];
 async function fetchForecast() {
     try {
         const response = await fetch(API_URL);
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
         const html = await response.text();
         const parser = new DOMParser();
         const doc = parser.parseFromString(html, 'text/html');
-        const forecastContent = doc.querySelector('#proddiff').textContent;
+        const forecastElement = doc.querySelector('#proddiff');
+        if (!forecastElement) {
+            throw new Error('Could not find forecast element in the response');
+        }
+        const forecastContent = forecastElement.textContent;
         return parseForecast(forecastContent);
     } catch (error) {
         console.error('Error fetching forecast:', error);
@@ -18,16 +25,22 @@ async function fetchForecast() {
 
 function parseForecast(content) {
     const zones = content.split('$$').filter(zone => zone.trim() !== '');
-    return zones.map(parseZone);
+    return zones.map(parseZone).filter(zone => zone !== null);
 }
 
 function parseZone(zoneContent) {
     const lines = zoneContent.trim().split('\n');
     const zoneRegex = /^ANZ\d{3}-\d{6}-$/;
+    
+    if (lines.length < 3 || !zoneRegex.test(lines[0])) {
+        console.warn('Invalid zone format:', zoneContent);
+        return null;
+    }
+
     const zone = {
-        id: '',
-        name: '',
-        updateTime: '',
+        id: lines[0].trim(),
+        name: lines[1].trim(),
+        updateTime: lines[2].trim(),
         advisory: '',
         forecast: []
     };
@@ -35,26 +48,21 @@ function parseZone(zoneContent) {
     let currentDay = '';
     let forecastText = '';
 
-    lines.forEach((line, index) => {
-        if (index === 0 && zoneRegex.test(line)) {
-            zone.id = line.trim();
-        } else if (index === 1) {
-            zone.name = line.trim();
-        } else if (index === 2) {
-            zone.updateTime = line.trim();
-        } else if (line.startsWith('...')) {
-            zone.advisory = line.trim();
+    for (let i = 3; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (line.startsWith('...')) {
+            zone.advisory = line;
         } else if (line.startsWith('.')) {
             if (currentDay) {
                 zone.forecast.push({ day: currentDay, details: forecastText.trim() });
                 forecastText = '';
             }
             currentDay = line.split('...')[0].replace('.', '').trim();
-            forecastText += line.split('...')[1].trim() + ' ';
+            forecastText = line.split('...')[1] ? line.split('...')[1].trim() + ' ' : '';
         } else if (currentDay) {
-            forecastText += line.trim() + ' ';
+            forecastText += line + ' ';
         }
-    });
+    }
 
     if (currentDay) {
         zone.forecast.push({ day: currentDay, details: forecastText.trim() });
@@ -65,12 +73,24 @@ function parseZone(zoneContent) {
 
 function renderZoneNav(zones) {
     const navElement = document.getElementById('zone-nav');
-    navElement.innerHTML = zones.map((zone, index) => `
-        <button class="px-4 py-2 m-1 bg-blue-500 text-white rounded hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50" 
-                onclick="showZone(${index})">
-            ${zone.name}
-        </button>
-    `).join('');
+    const defaultZoneIndex = zones.findIndex(zone => zone.name.startsWith("Long Island Sound West of New Haven"));
+    
+    navElement.innerHTML = `
+        <select id="zone-select" class="w-full p-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+            ${zones.map((zone, index) => `
+                <option value="${index}" ${index === defaultZoneIndex ? 'selected' : ''}>
+                    ${zone.name}
+                </option>
+            `).join('')}
+        </select>
+    `;
+
+    document.getElementById('zone-select').addEventListener('change', (e) => {
+        showZone(parseInt(e.target.value));
+    });
+
+    // Show the default zone
+    showZone(defaultZoneIndex !== -1 ? defaultZoneIndex : 0);
 }
 
 function showZone(index) {
@@ -97,15 +117,19 @@ async function init() {
 
         forecastData = await fetchForecast();
         
+        if (forecastData.length === 0) {
+            throw new Error('No forecast data found');
+        }
+
         document.getElementById('loading').classList.add('hidden');
         document.getElementById('forecast-container').classList.remove('hidden');
 
         renderZoneNav(forecastData);
-        showZone(0);
     } catch (error) {
+        console.error('Error in init:', error);
         document.getElementById('loading').classList.add('hidden');
         document.getElementById('error').classList.remove('hidden');
-        document.getElementById('error').textContent = 'Failed to load forecast. Please try again later.';
+        document.getElementById('error').textContent = `Failed to load forecast: ${error.message}. Please try again later.`;
     }
 }
 
