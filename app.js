@@ -133,4 +133,41 @@ async function init() {
     }
 }
 
+// Simple tab switching logic using Tailwind classes
+function setupTabs() {
+    const buttons = document.querySelectorAll('.tab-btn');
+    const panels = {
+        marine: document.getElementById('tab-marine'),
+        windy: document.getElementById('tab-windy'),
+        radar: document.getElementById('tab-radar'),
+    };
+
+    function showTab(name) {
+        Object.entries(panels).forEach(([key, el]) => {
+            if (!el) return;
+            el.classList.toggle('hidden', key !== name);
+        });
+        buttons.forEach((btn) => {
+            const isActive = btn.dataset.tab === name;
+            btn.classList.toggle('border-blue-600', isActive);
+            btn.classList.toggle('text-blue-600', isActive);
+            btn.classList.toggle('border-transparent', !isActive);
+            btn.classList.toggle('text-gray-600', !isActive);
+            btn.setAttribute('aria-selected', String(isActive));
+        });
+        // Trigger resize to help third-party widgets render when shown
+        if (name === 'windy' || name === 'radar') {
+            window.dispatchEvent(new Event('resize'));
+        }
+    }
+
+    buttons.forEach((btn) => {
+        btn.addEventListener('click', () => showTab(btn.dataset.tab));
+    });
+
+    // Default tab
+    showTab('marine');
+}
+
 init();
+setupTabs();
