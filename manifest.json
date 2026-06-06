@@ -1,0 +1,16 @@
+{
+  "name": "Marine Weather — Long Island Sound",
+  "short_name": "Marine",
+  "description": "At-a-glance go/no-go marine weather for the Long Island Sound.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a4a6e",
+  "theme_color": "#0a4a6e",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

@@ -1,55 +1,137 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Marine Weather Forecast</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-</head>
-<body class="bg-gray-100">
-  <div id="app" class="container mx-auto p-4">
-    <h1 class="text-3xl font-bold mb-6">Marine Weather</h1>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Marine Weather — Long Island Sound</title>
 
-    <div class="mb-4 border-b border-gray-200">
-      <nav class="-mb-px flex space-x-4" role="tablist" aria-label="Weather Tabs">
-        <button type="button" class="tab-btn border-b-2 border-blue-600 text-blue-600 px-3 py-2 text-sm font-medium" data-tab="marine" aria-selected="true">Marine Forecast</button>
-        <button type="button" class="tab-btn border-b-2 border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300 px-3 py-2 text-sm font-medium" data-tab="windy" aria-selected="false">Windy Forecast</button>
-        <button type="button" class="tab-btn border-b-2 border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300 px-3 py-2 text-sm font-medium" data-tab="radar" aria-selected="false">Radar</button>
+  <meta name="theme-color" content="#0a4a6e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Marine">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+
+  <!-- Apply theme before paint to avoid flash -->
+  <script>
+    (function () {
+      const t = localStorage.getItem('mw-theme');
+      if (t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+        document.documentElement.classList.add('dark');
+      }
+    })();
+  </script>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = { darkMode: 'class' };</script>
+  <style>
+    body { -webkit-tap-highlight-color: transparent; overflow-x: hidden; }
+    /* iOS safe-area padding */
+    .safe-top { padding-top: env(safe-area-inset-top); }
+    .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+    @keyframes pulseSoft { 0%,100%{opacity:1} 50%{opacity:.45} }
+    .skeleton { animation: pulseSoft 1.2s ease-in-out infinite; }
+  </style>
+</head>
+
+<body class="bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 antialiased">
+  <div class="max-w-2xl mx-auto px-4 pb-16 safe-bottom">
+
+    <!-- Header -->
+    <header class="safe-top pt-4 pb-3 flex items-center gap-3">
+      <div class="flex-1 min-w-0">
+        <h1 class="text-xl font-bold tracking-tight">Marine Weather</h1>
+        <div class="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+          <select id="location-select"
+                  class="bg-transparent font-medium text-slate-700 dark:text-slate-300 -ml-0.5 focus:outline-none">
+          </select>
+          <span id="updated-at" class="whitespace-nowrap"></span>
+        </div>
+      </div>
+      <button id="geo-btn" title="Use my location"
+              class="h-9 w-9 grid place-items-center rounded-full bg-white dark:bg-slate-800 ring-1 ring-black/5 dark:ring-white/10 active:scale-95 transition">
+        <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+      </button>
+      <button id="refresh-btn" title="Refresh"
+              class="h-9 w-9 grid place-items-center rounded-full bg-white dark:bg-slate-800 ring-1 ring-black/5 dark:ring-white/10 active:scale-95 transition">
+        <svg id="refresh-icon" viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 4v5h-5"/></svg>
+      </button>
+      <button id="theme-btn" title="Toggle theme"
+              class="h-9 w-9 grid place-items-center rounded-full bg-white dark:bg-slate-800 ring-1 ring-black/5 dark:ring-white/10 active:scale-95 transition">
+        <svg class="h-5 w-5 hidden dark:block" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/></svg>
+        <svg class="h-5 w-5 block dark:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/></svg>
+      </button>
+    </header>
+
+    <!-- Active alerts -->
+    <div id="alerts" class="space-y-2 mb-3"></div>
+
+    <!-- Go / No-Go verdict -->
+    <section id="verdict" class="rounded-2xl p-5 mb-3 text-white shadow-sm transition-colors bg-slate-400">
+      <div class="flex items-center justify-between">
+        <div>
+          <div id="verdict-label" class="text-2xl font-extrabold tracking-tight">Loading…</div>
+          <div id="verdict-sub" class="text-sm opacity-90">Checking conditions</div>
+        </div>
+        <div id="verdict-emoji" class="text-4xl"></div>
+      </div>
+      <div id="verdict-reasons" class="flex flex-wrap gap-1.5 mt-3"></div>
+    </section>
+
+    <!-- Now: key stats -->
+    <section id="now-grid" class="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3"></section>
+
+    <!-- Tides / Currents / Sun -->
+    <section class="grid sm:grid-cols-2 gap-2 mb-3">
+      <div id="tides-card" class="rounded-2xl bg-white dark:bg-slate-800 shadow-sm ring-1 ring-black/5 dark:ring-white/10 p-4"></div>
+      <div id="sun-card" class="rounded-2xl bg-white dark:bg-slate-800 shadow-sm ring-1 ring-black/5 dark:ring-white/10 p-4"></div>
+    </section>
+    <section id="currents-card" class="rounded-2xl bg-white dark:bg-slate-800 shadow-sm ring-1 ring-black/5 dark:ring-white/10 p-4 mb-4"></section>
+
+    <!-- Tabs -->
+    <div class="sticky top-0 z-10 -mx-4 px-4 py-2 bg-slate-100/90 dark:bg-slate-950/90 backdrop-blur border-b border-black/5 dark:border-white/10">
+      <nav class="flex gap-1 text-sm font-medium" role="tablist">
+        <button class="tab-btn px-3 py-1.5 rounded-full" data-tab="hourly">Next 48h</button>
+        <button class="tab-btn px-3 py-1.5 rounded-full" data-tab="marine">Forecast</button>
+        <button class="tab-btn px-3 py-1.5 rounded-full" data-tab="windy">Windy</button>
+        <button class="tab-btn px-3 py-1.5 rounded-full" data-tab="radar">Radar</button>
       </nav>
     </div>
 
-    <div id="tab-panels">
-      <section id="tab-marine" role="tabpanel">
-        <div id="loading" class="text-center">
-          <p class="text-lg">Loading forecast...</p>
-        </div>
-        <div id="error" class="hidden text-red-500 text-center"></div>
+    <div class="pt-3">
+      <!-- Hourly -->
+      <section id="tab-hourly" role="tabpanel">
+        <div id="hourly-content" class="rounded-2xl bg-white dark:bg-slate-800 shadow-sm ring-1 ring-black/5 dark:ring-white/10 p-4 overflow-x-auto"></div>
+      </section>
+
+      <!-- Marine text forecast -->
+      <section id="tab-marine" role="tabpanel" class="hidden">
+        <div id="marine-loading" class="text-center py-8 text-slate-500">Loading forecast…</div>
+        <div id="marine-error" class="hidden text-red-500 text-center py-8"></div>
         <div id="forecast-container" class="hidden">
-          <div class="mb-4">
-            <label for="zone-select" class="block text-sm font-medium text-gray-700 mb-2">Select Zone:</label>
-            <div id="zone-nav"></div>
-          </div>
-          <div id="zone-forecast" class="bg-white rounded-lg shadow-md p-4"></div>
+          <label for="zone-select" class="block text-xs font-medium text-slate-500 mb-1">NWS Zone</label>
+          <div id="zone-nav" class="mb-3"></div>
+          <div id="zone-forecast" class="rounded-2xl bg-white dark:bg-slate-800 shadow-sm ring-1 ring-black/5 dark:ring-white/10 p-4"></div>
         </div>
       </section>
 
+      <!-- Windy -->
       <section id="tab-windy" role="tabpanel" class="hidden">
-        <div
-          data-windywidget="forecast"
-          data-thememode="white"
-          data-spotid="7813759"
-          data-windunit="knots"
-          data-tempunit="F"
-          data-appid="b4ecac6222ef833416708274c19725f2"
-          class="rounded-lg shadow-md">
-        </div>
-        <script async="true" data-cfasync="false" type="text/javascript" src="https://windy.app/widgets-code/forecast/windy_forecast_async.js?v168"></script>
+        <div id="windy-mount" class="rounded-2xl overflow-hidden shadow-sm"></div>
       </section>
 
+      <!-- Radar -->
       <section id="tab-radar" role="tabpanel" class="hidden">
-        <iframe src="https://www.rainviewer.com/map.html?loc=40.9270,-73.7524,4.366288765090307&oCS=1&c=3&o=83&lm=1&layer=radar&sm=1&sn=1" width="100%" frameborder="0" style="border:0;height:70vh;" allowfullscreen></iframe>
+        <iframe id="radar-frame"
+          src="https://www.rainviewer.com/map.html?loc=41.0500,-72.9000,8&oCS=1&c=3&o=83&lm=1&layer=radar&sm=1&sn=1"
+          class="w-full rounded-2xl shadow-sm" style="border:0;height:72vh" allowfullscreen></iframe>
       </section>
     </div>
+
+    <footer class="text-center text-[11px] text-slate-400 mt-8">
+      Data: NOAA / NWS · Open-Meteo · NOAA Tides &amp; Currents. Not for navigation.
+    </footer>
   </div>
 
   <script src="app.js"></script>
