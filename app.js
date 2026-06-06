@@ -11,19 +11,13 @@
 
 const NWS_UA = 'marine-weather (henry@sztul.com)'; // NWS asks for an identifying UA
 
-// Boating areas on the Sound. Currents (The Race / Plum Gut) are shown
-// globally since they're the gates everyone crosses, so presets only vary
-// point location, NWS marine zone, and nearest tide station.
+// Boating areas. Each preset drives the top-of-page conditions, NWS marine
+// zone, nearest tide station, and nearest predicting tidal-current station.
+// Mamaroneck (home port) is the default.
 const LOCATIONS = [
-  { id: 'west',    name: 'Western LI Sound',  lat: 41.05, lon: -73.40, zone: 'ANZ335', tide: '8516945', tideName: 'Kings Point' },
-  { id: 'central', name: 'Central LI Sound',  lat: 41.10, lon: -73.10, zone: 'ANZ335', tide: '8467150', tideName: 'Bridgeport' },
-  { id: 'east',    name: 'Eastern LI Sound',  lat: 41.18, lon: -72.55, zone: 'ANZ332', tide: '8461490', tideName: 'New London' },
-];
-
-// Tidal-current gates (always relevant for a Sound crossing)
-const CURRENT_STATIONS = [
-  { id: 'LIS1001', name: 'The Race' },
-  { id: 'LIS1012', name: 'Plum Gut' },
+  { id: 'mamaroneck', name: 'Mamaroneck',       lat: 40.948, lon: -73.732, zone: 'ANZ335', tide: '8518091', tideName: 'Rye Beach',  current: 'ACT3201', currentName: 'Off Mamaroneck' },
+  { id: 'central',    name: 'Central LI Sound', lat: 41.10,  lon: -73.10,  zone: 'ANZ335', tide: '8467150', tideName: 'Bridgeport', current: 'LIS1027', currentName: 'Stratford Shoal' },
+  { id: 'east',       name: 'Eastern LI Sound', lat: 41.18,  lon: -72.55,  zone: 'ANZ332', tide: '8461490', tideName: 'New London', current: 'LIS1001', currentName: 'The Race' },
 ];
 
 // Small Craft Advisory-style thresholds (NWS marine criteria)
@@ -230,24 +224,26 @@ function renderTides(preds, loc) {
     ${rows}`;
 }
 
-function renderCurrents(sets) {
+function renderCurrents(cp, loc) {
+  const card = $('currents-card');
   const now = new Date();
-  const blocks = sets.map(({ name, cp }) => {
-    const next = cp.map((c) => ({ when: parseNoaa(c.Time), type: c.Type, vel: c.Velocity_Major }))
-      .filter((c) => c.when > now).slice(0, 2);
-    if (!next.length) return `<div><div class="text-sm font-semibold">${name}</div><div class="text-xs text-slate-400">unavailable</div></div>`;
-    const items = next.map((c) => {
-      const label = c.type === 'slack' ? 'Slack'
-        : c.type === 'flood' ? `Flood ${Math.abs(c.vel).toFixed(1)} kt`
-        : `Ebb ${Math.abs(c.vel).toFixed(1)} kt`;
-      const dir = c.type === 'flood' ? '→ W' : c.type === 'ebb' ? '← E' : '·';
-      return `<div class="flex justify-between text-sm"><span>${label} <span class="text-slate-400 text-xs">${dir}</span></span><span class="font-medium">${fmtTime(c.when)}</span></div>`;
-    }).join('');
-    return `<div class="flex-1 min-w-[140px]"><div class="text-sm font-semibold mb-1">🌀 ${name}</div>${items}</div>`;
+  const next = (cp || []).map((c) => ({ when: parseNoaa(c.Time), type: c.Type, vel: c.Velocity_Major }))
+    .filter((c) => c.when > now).slice(0, 4);
+  if (!next.length) { card.classList.add('hidden'); return; } // no local prediction → hide entirely
+  card.classList.remove('hidden');
+  const items = next.map((c) => {
+    const label = c.type === 'slack' ? 'Slack water'
+      : c.type === 'flood' ? `Flood ${Math.abs(c.vel).toFixed(1)} kt`
+      : `Ebb ${Math.abs(c.vel).toFixed(1)} kt`;
+    // In western LIS, flood sets W/SW, ebb sets E/NE
+    const dir = c.type === 'flood' ? 'sets W' : c.type === 'ebb' ? 'sets E' : '';
+    return `<div class="flex items-center justify-between py-1">
+      <span class="text-sm">${label} <span class="text-slate-400 text-xs">${dir}</span></span>
+      <span class="text-sm font-medium">${fmtTime(c.when)}</span></div>`;
   }).join('');
-  $('currents-card').innerHTML = `
-    <div class="text-[11px] uppercase tracking-wide text-slate-400 font-semibold mb-2">Tidal Currents — crossing gates</div>
-    <div class="flex flex-wrap gap-4">${blocks}</div>`;
+  card.innerHTML = `
+    <div class="text-[11px] uppercase tracking-wide text-slate-400 font-semibold mb-1">Tidal Current · ${loc.currentName || 'Local'}</div>
+    ${items}`;
 }
 
 function renderSun(loc) {
@@ -392,13 +388,12 @@ async function loadAll() {
   // Render sun immediately (no network)
   renderSun(loc);
 
-  const [om, marine, tides, alerts, raceCp, plumCp] = await Promise.all([
+  const [om, marine, tides, alerts, currentCp] = await Promise.all([
     fetchOpenMeteo(loc).catch((e) => { console.error('open-meteo', e); return null; }),
     fetchMarine(loc),
     fetchTides(loc),
     fetchAlerts(loc.zone),
-    fetchCurrent('LIS1001'),
-    fetchCurrent('LIS1012'),
+    loc.current ? fetchCurrent(loc.current) : Promise.resolve([]),
   ]);
 
   // Build the unified "now" snapshot
@@ -416,7 +411,7 @@ async function loadAll() {
   renderVerdict(computeVerdict(d));
   renderNow(d);
   renderTides(tides, loc);
-  renderCurrents([{ name: 'The Race', cp: raceCp }, { name: 'Plum Gut', cp: plumCp }]);
+  renderCurrents(currentCp, loc);
   if (om) renderHourly(om, marine);
 
   state.data = { d, at: Date.now() };
