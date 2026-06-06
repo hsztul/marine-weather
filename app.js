@@ -64,19 +64,21 @@ async function fetchMarine(loc) {
   return getJSON(url).catch(() => null); // marine model can be sparse; degrade gracefully
 }
 
-async function fetchTides(loc) {
-  const today = ymd(new Date());
+async function fetchTides(loc, days = 3) {
+  const begin = ymd(new Date()), end = ymd(new Date(Date.now() + days * 86400000));
   const url = 'https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=predictions&datum=MLLW' +
     '&station=' + loc.tide + '&time_zone=lst_ldt&units=english&interval=hilo&format=json' +
-    '&begin_date=' + today + '&range=48';
+    '&begin_date=' + begin + '&end_date=' + end;
   return getJSON(url).then((d) => d.predictions || []).catch(() => []);
 }
 
-async function fetchCurrent(station) {
-  const today = ymd(new Date());
+// Default to a full spring-neap cycle so the average-peak normalization in the
+// fishing model is stable and matches the multi-day Fish tab (payload is tiny).
+async function fetchCurrent(station, days = 16) {
+  const begin = ymd(new Date()), end = ymd(new Date(Date.now() + days * 86400000));
   const url = 'https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=currents_predictions' +
     '&station=' + station + '&time_zone=lst_ldt&units=english&interval=MAX_SLACK&format=json' +
-    '&begin_date=' + today + '&range=30';
+    '&begin_date=' + begin + '&end_date=' + end;
   return getJSON(url).then((d) => (d.current_predictions && d.current_predictions.cp) || []).catch(() => []);
 }
 
@@ -429,15 +431,16 @@ function moonIllum(date) { // illuminated fraction 0(new)..1(full)
   const elong = Math.acos(Math.sin(s.dec) * Math.sin(m.dec) + Math.cos(s.dec) * Math.cos(m.dec) * Math.cos(s.ra - m.ra));
   return (1 - Math.cos(elong)) / 2;
 }
-function moonPhaseName() {
-  const f = moonIllum(new Date()), f2 = moonIllum(new Date(Date.now() + M_DAYMS)), waxing = f2 > f;
-  if (f < 0.04) return '🌑 New moon';
-  if (f > 0.96) return '🌕 Full moon';
-  if (Math.abs(f - 0.5) < 0.06) return waxing ? '🌓 First quarter' : '🌗 Last quarter';
+function moonInfo(date) { // { glyph, name } for a given day
+  const f = moonIllum(date), f2 = moonIllum(new Date(date.getTime() + M_DAYMS)), waxing = f2 > f;
+  if (f < 0.04) return { glyph: '🌑', name: 'New moon' };
+  if (f > 0.96) return { glyph: '🌕', name: 'Full moon' };
+  if (Math.abs(f - 0.5) < 0.06) return waxing ? { glyph: '🌓', name: 'First quarter' } : { glyph: '🌗', name: 'Last quarter' };
   const cresc = f < 0.5;
-  if (waxing) return cresc ? '🌒 Waxing crescent' : '🌔 Waxing gibbous';
-  return cresc ? '🌘 Waning crescent' : '🌖 Waning gibbous';
+  if (waxing) return cresc ? { glyph: '🌒', name: 'Waxing crescent' } : { glyph: '🌔', name: 'Waxing gibbous' };
+  return cresc ? { glyph: '🌘', name: 'Waning crescent' } : { glyph: '🌖', name: 'Waning gibbous' };
 }
+function moonPhaseName() { const m = moonInfo(new Date()); return m.glyph + ' ' + m.name; }
 // Solunar events: major = lunar transit/anti-transit (altitude extrema),
 // minor = moonrise/set (altitude horizon crossings), scanned over the window.
 function solunarEvents(startMs, hours, lat, lon) {
@@ -471,11 +474,13 @@ function windScore(kt) { // fishable-chop sweet spot ~5-12kt
   return 0.6 + (kt / 5) * 0.4;                          // calm dip 0-5 -> 0.6..1.0
 }
 
-function computeFishing(om, tides, currentCp, loc) {
+// Score every forecast hour within `horizonHrs`. Shared by the 48h panel and
+// the multi-day Fish tab. Returns { data:[{ms,score,reasons}], illum } or null.
+function buildFishingData(om, tides, currentCp, loc, horizonHrs) {
   if (!om || !om.hourly) return null;
   const H = om.hourly, lat = loc.lat, lon = loc.lon, now = Date.now();
   const hours = H.time.map((t, i) => ({ t: new Date(t).getTime(), i }))
-    .filter((o) => o.t >= now - 3600000 && o.t <= now + 48 * 3600000);
+    .filter((o) => o.t >= now - 3600000 && o.t <= now + horizonHrs * 3600000);
   if (!hours.length) return null;
   const startMs = hours[0].t;
 
@@ -491,22 +496,26 @@ function computeFishing(om, tides, currentCp, loc) {
 
   // tide turns (high/low)
   const turns = (tides || []).map((p) => parseNoaa(p.t).getTime());
-  // current speed model: interpolate |velocity| between slack (~0) and max flood/ebb
+  // current speed model: interpolate |velocity| between slack (~0) and flood/ebb peaks.
+  // Normalize by the AVERAGE peak (horizon-independent) so near-term scores don't
+  // shift when the fetch window includes stronger spring tides — capped at 1.
   const cur = (currentCp || []).map((c) => ({ t: parseNoaa(c.Time).getTime(), vel: Math.abs(c.Velocity_Major || 0) })).sort((a, b) => a.t - b.t);
-  const maxVel = Math.max(0.3, ...cur.map((c) => c.vel));
+  const peaks = cur.filter((c) => c.vel > 0.1).map((c) => c.vel);
+  const refVel = peaks.length ? Math.max(0.3, peaks.reduce((a, b) => a + b, 0) / peaks.length) : 0.5;
+  const norm = (v) => Math.min(1, v / refVel);
   function currentSpeed(ms) {
     if (cur.length < 2) return 0.5;
-    if (ms <= cur[0].t) return cur[0].vel / maxVel;
-    if (ms >= cur[cur.length - 1].t) return cur[cur.length - 1].vel / maxVel;
+    if (ms <= cur[0].t) return norm(cur[0].vel);
+    if (ms >= cur[cur.length - 1].t) return norm(cur[cur.length - 1].vel);
     for (let k = 0; k < cur.length - 1; k++) if (ms >= cur[k].t && ms <= cur[k + 1].t) {
       const f = (ms - cur[k].t) / (cur[k + 1].t - cur[k].t);
-      return (cur[k].vel + f * (cur[k + 1].vel - cur[k].vel)) / maxVel;
+      return norm(cur[k].vel + f * (cur[k + 1].vel - cur[k].vel));
     }
     return 0.5;
   }
   const turnBonus = (ms) => { let b = Infinity; for (const t of turns) b = Math.min(b, Math.abs(ms - t)); const w = 90 * 60000; return b <= w ? 1 - b / w : 0; };
 
-  const ev = solunarEvents(startMs, 48, lat, lon);
+  const ev = solunarEvents(startMs, horizonHrs, lat, lon);
   const illum = moonIllum(new Date(now));
   const phaseFactor = 0.7 + 0.3 * Math.cos(2 * Math.PI * illum); // new & full boost; quarters lower
 
@@ -542,21 +551,46 @@ function computeFishing(om, tides, currentCp, loc) {
     return { ms, i, score, reasons };
   });
 
-  // group consecutive qualifying hours into windows
+  return { data, illum };
+}
+
+// Group consecutive qualifying hours into fishing windows, best peak first.
+function findWindows(data, minScore) {
   const windows = [];
   let w = null;
   for (const h of data) {
-    if (h.score >= 52 && !h.reasons.includes('too windy')) {
+    if (h.score >= minScore && !h.reasons.includes('too windy')) {
       if (!w) w = { start: h.ms, end: h.ms, peak: h.score, reasons: new Set(h.reasons) };
       else { w.end = h.ms; w.peak = Math.max(w.peak, h.score); h.reasons.forEach((r) => w.reasons.add(r)); }
     } else if (w) { windows.push(w); w = null; }
   }
   if (w) windows.push(w);
-  windows.sort((a, b) => b.peak - a.peak);
+  return windows.sort((a, b) => b.peak - a.peak);
+}
 
+function computeFishing(om, tides, currentCp, loc) {
+  const built = buildFishingData(om, tides, currentCp, loc, 48);
+  if (!built) return null;
   const scoreByMs = {};
-  data.forEach((h) => { scoreByMs[h.ms] = h.score; });
-  return { scoreByMs, windows: windows.slice(0, 3), illum };
+  built.data.forEach((h) => { scoreByMs[h.ms] = h.score; });
+  return { scoreByMs, windows: findWindows(built.data, 52).slice(0, 3), illum: built.illum };
+}
+
+// Multi-day outlook for the Fish tab — one entry per calendar day.
+function computeFishingDaily(om, tides, currentCp, loc) {
+  const built = buildFishingData(om, tides, currentCp, loc, 16 * 24);
+  if (!built) return null;
+  const windows = findWindows(built.data, 52);
+  const days = {};
+  for (const h of built.data) {
+    const k = new Date(h.ms).toDateString();
+    if (!days[k]) days[k] = { ms: h.ms, peak: h.score, windows: [] };
+    else { days[k].peak = Math.max(days[k].peak, h.score); days[k].ms = Math.min(days[k].ms, h.ms); }
+  }
+  for (const w of windows) { const k = new Date(w.start).toDateString(); if (days[k]) days[k].windows.push(w); }
+  const list = Object.values(days).sort((a, b) => a.ms - b.ms);
+  list.forEach((d) => d.windows.sort((a, b) => b.peak - a.peak));
+  return { days: list, illum: built.illum };
 }
 
 function dayLabel(ms) {
@@ -670,6 +704,64 @@ function updateTimestamp() {
   $('updated-at').textContent = '· updated ' + (mins < 1 ? 'just now' : mins + 'm ago');
 }
 
+/* ---------------- Fish tab: multi-day outlook ---------------- */
+const FISH_DAYS = 16; // weather (Open-Meteo) caps the horizon at 16 days
+
+async function loadFishTab() {
+  const loc = state.loc;
+  if (state.fishLoadedFor === loc.id) return;
+  const el = $('fish-content');
+  el.innerHTML = '<div class="text-center py-8 text-slate-500 text-sm skeleton">Loading multi-day outlook…</div>';
+  const omUrl = 'https://api.open-meteo.com/v1/forecast?latitude=' + loc.lat + '&longitude=' + loc.lon +
+    '&hourly=wind_speed_10m,wind_gusts_10m,wind_direction_10m,precipitation_probability,weather_code,cloud_cover,surface_pressure' +
+    '&wind_speed_unit=kn&timezone=America%2FNew_York&forecast_days=' + FISH_DAYS;
+  try {
+    const [om, tides, currentCp] = await Promise.all([
+      getJSON(omUrl),
+      fetchTides(loc, FISH_DAYS),
+      loc.current ? fetchCurrent(loc.current, FISH_DAYS) : Promise.resolve([]),
+    ]);
+    renderFishTab(computeFishingDaily(om, tides, currentCp, loc));
+    state.fishLoadedFor = loc.id;
+  } catch (e) {
+    console.error('fish tab', e);
+    el.innerHTML = '<div class="text-center py-8 text-red-500 text-sm">Could not load the multi-day outlook.</div>';
+  }
+}
+
+function renderFishTab(daily) {
+  const el = $('fish-content');
+  if (!daily || !daily.days.length) { el.innerHTML = '<div class="text-sm text-slate-400">Outlook unavailable.</div>'; return; }
+  const starCount = (p) => (p >= 74 ? 5 : p >= 64 ? 4 : p >= 55 ? 3 : p >= 45 ? 2 : 1);
+  const stars = (n) => `<span class="text-amber-500">${'★'.repeat(n)}</span><span class="text-slate-300 dark:text-slate-600">${'★'.repeat(5 - n)}</span>`;
+  const fmtWin = (w) => {
+    let rs = [...w.reasons].filter((r) => r !== 'too windy');
+    if (rs.includes('dawn') || rs.includes('dusk')) rs = rs.filter((r) => r !== 'night');
+    return `${fmtTime(new Date(w.start))}–${fmtTime(new Date(w.end + 3600000))} <span class="text-slate-400">· ${rs.slice(0, 2).join(' · ') || 'good mix'}</span>`;
+  };
+  const rows = daily.days.map((d, idx) => {
+    const n = starCount(d.peak);
+    const m = moonInfo(new Date(d.ms + 12 * 3600000));
+    const best = d.windows[0];
+    const detail = best
+      ? `<div class="text-xs mt-0.5 capitalize">${fmtWin(best)}</div>${d.windows[1] ? `<div class="text-xs text-slate-400 mt-0.5 capitalize">${fmtWin(d.windows[1])}</div>` : ''}`
+      : `<div class="text-xs text-slate-400 mt-0.5">Slow — work the tide changes</div>`;
+    const dim = idx >= 7 ? ' opacity-70' : ''; // weather confidence fades past a week
+    return `<div class="py-2.5 border-b border-black/5 dark:border-white/5 last:border-0${dim}">
+      <div class="flex items-center gap-2">
+        <div class="text-sm font-semibold w-28 shrink-0">${dayLabel(d.ms)} <span class="text-slate-400 font-normal">${new Date(d.ms).toLocaleDateString([], { month: 'short', day: 'numeric' })}</span></div>
+        <div class="text-sm">${stars(n)}</div>
+        <div class="ml-auto text-base shrink-0" title="${m.name}">${m.glyph}</div>
+      </div>
+      ${detail}
+    </div>`;
+  }).join('');
+  el.innerHTML = `
+    <div class="text-[11px] uppercase tracking-wide text-slate-400 font-semibold mb-2">🎣 ${FISH_DAYS}-Day Fishing Outlook · ${state.loc.name}</div>
+    ${rows}
+    <div class="text-[11px] text-slate-400 mt-3 leading-relaxed">Tides &amp; moon are reliable the whole way out; wind &amp; barometer accuracy fades after ~7 days (later days dimmed). Best window shown per day.</div>`;
+}
+
 /* ---------------- UI wiring ---------------- */
 function buildLocationSelect() {
   $('location-select').innerHTML = LOCATIONS.map((l) => `<option value="${l.id}">${l.name}</option>`).join('');
@@ -682,17 +774,19 @@ function buildLocationSelect() {
     state.loc = LOCATIONS.find((l) => l.id === e.target.value) || LOCATIONS[0];
     localStorage.setItem('mw-loc', state.loc.id);
     state.forecastZones = [];
+    state.fishLoadedFor = null;
     $('marine-loading').classList.remove('hidden');
     $('forecast-container').classList.add('hidden');
     $('marine-error').classList.add('hidden');
     loadAll();
     if (!$('tab-marine').classList.contains('hidden')) loadMarineText();
+    if (!$('tab-fish').classList.contains('hidden')) loadFishTab();
   });
 }
 
 function setupTabs() {
   const buttons = document.querySelectorAll('.tab-btn');
-  const panels = ['hourly', 'marine', 'windy', 'radar'];
+  const panels = ['hourly', 'fish', 'marine', 'windy', 'radar'];
   const ACTIVE = ['bg-blue-600', 'text-white'];
   const IDLE = ['text-slate-500', 'hover:bg-black/5', 'dark:hover:bg-white/10'];
   function show(name) {
@@ -702,6 +796,7 @@ function setupTabs() {
       b.classList.toggle('bg-blue-600', on); b.classList.toggle('text-white', on);
       b.classList.toggle('text-slate-500', !on);
     });
+    if (name === 'fish') loadFishTab();
     if (name === 'marine') loadMarineText();
     if (name === 'windy') mountWindy();
     if (name === 'windy' || name === 'radar') window.dispatchEvent(new Event('resize'));
