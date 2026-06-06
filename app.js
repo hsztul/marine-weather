@@ -15,9 +15,9 @@ const NWS_UA = 'marine-weather (henry@sztul.com)'; // NWS asks for an identifyin
 // zone, nearest tide station, and nearest predicting tidal-current station.
 // Mamaroneck (home port) is the default.
 const LOCATIONS = [
-  { id: 'mamaroneck', name: 'Mamaroneck',       lat: 40.948, lon: -73.732, zone: 'ANZ335', tide: '8518091', tideName: 'Rye Beach',  current: 'ACT3201', currentName: 'Off Mamaroneck' },
-  { id: 'central',    name: 'Central LI Sound', lat: 41.10,  lon: -73.10,  zone: 'ANZ335', tide: '8467150', tideName: 'Bridgeport', current: 'LIS1027', currentName: 'Stratford Shoal' },
-  { id: 'east',       name: 'Eastern LI Sound', lat: 41.18,  lon: -72.55,  zone: 'ANZ332', tide: '8461490', tideName: 'New London', current: 'LIS1001', currentName: 'The Race' },
+  { id: 'mamaroneck', name: 'Mamaroneck',       lat: 40.948, lon: -73.732, zone: 'ANZ335', tide: '8518091', tideName: 'Rye Beach',  current: 'ACT3201', currentName: 'Off Mamaroneck',  obs: '8516945', obsName: 'Kings Point' },
+  { id: 'central',    name: 'Central LI Sound', lat: 41.10,  lon: -73.10,  zone: 'ANZ335', tide: '8467150', tideName: 'Bridgeport', current: 'LIS1027', currentName: 'Stratford Shoal', obs: '8467150', obsName: 'Bridgeport' },
+  { id: 'east',       name: 'Eastern LI Sound', lat: 41.18,  lon: -72.55,  zone: 'ANZ332', tide: '8461490', tideName: 'New London', current: 'LIS1001', currentName: 'The Race',       obs: '8461490', obsName: 'New London' },
 ];
 
 // Small Craft Advisory-style thresholds (NWS marine criteria)
@@ -78,6 +78,27 @@ async function fetchCurrent(station) {
     '&station=' + station + '&time_zone=lst_ldt&units=english&interval=MAX_SLACK&format=json' +
     '&begin_date=' + today + '&range=30';
   return getJSON(url).then((d) => (d.current_predictions && d.current_predictions.cp) || []).catch(() => []);
+}
+
+// Observed conditions from a NOAA CO-OPS met station (reliable, CORS-friendly,
+// permanent — used instead of the seasonal NDBC LIS buoys which go offline).
+async function fetchObs(station) {
+  if (!station) return null;
+  const co = (product) => 'https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=' + product +
+    '&station=' + station + '&time_zone=lst_ldt&units=english&format=json&date=latest';
+  const [water, wind] = await Promise.all([
+    getJSON(co('water_temperature')).catch(() => null),
+    getJSON(co('wind')).catch(() => null),
+  ]);
+  const wd = water && water.data && water.data[0];
+  const nd = wind && wind.data && wind.data[0];
+  return {
+    waterF: wd ? parseFloat(wd.v) : null,
+    waterTime: wd ? wd.t : null,
+    obsWind: nd ? parseFloat(nd.s) : null,
+    obsGust: nd ? parseFloat(nd.g) : null,
+    obsWindDir: nd ? parseFloat(nd.d) : null,
+  };
 }
 
 async function fetchAlerts(zone) {
@@ -168,7 +189,7 @@ function renderNow(d) {
     statCard('Direction', d.windDir != null ? compass(d.windDir) : '—', '', `from ${d.windDir ?? '—'}°`),
     statCard('Seas', round(d.wave, 1), 'ft', d.wavePeriod ? `${round(d.wavePeriod, 1)} s period` : 'no model data'),
     statCard('Visibility', d.visNm != null ? round(d.visNm, 1) : '—', 'nm', d.visNm != null && d.visNm < 3 ? 'reduced' : 'clear'),
-    statCard('Water', round(d.waterF), '°F', ''),
+    statCard('Water', round(d.waterF), '°F', d.waterSrc ? (d.waterSrc === 'model' ? 'model est.' : 'obs · ' + d.waterSrc) : ''),
     statCard('Air', round(d.airF), '°F', ''),
   ].join('');
 }
@@ -388,22 +409,28 @@ async function loadAll() {
   // Render sun immediately (no network)
   renderSun(loc);
 
-  const [om, marine, tides, alerts, currentCp] = await Promise.all([
+  const [om, marine, tides, alerts, currentCp, obs] = await Promise.all([
     fetchOpenMeteo(loc).catch((e) => { console.error('open-meteo', e); return null; }),
     fetchMarine(loc),
     fetchTides(loc),
     fetchAlerts(loc.zone),
     loc.current ? fetchCurrent(loc.current) : Promise.resolve([]),
+    fetchObs(loc.obs).catch(() => null),
   ]);
 
   // Build the unified "now" snapshot
   const cur = om && om.current ? om.current : {};
   const mc = marine && marine.current ? marine.current : {};
   const warning = alerts.find((a) => /warning/i.test(a.event));
+  // Prefer observed water temp from the CO-OPS station; fall back to model SST.
+  const waterObs = obs && obs.waterF != null;
   const d = {
     wind: cur.wind_speed_10m, gust: cur.wind_gusts_10m, windDir: cur.wind_direction_10m,
     airF: cur.temperature_2m, visNm: mToNm(cur.visibility), weatherCode: cur.weather_code,
-    wave: mc.wave_height, wavePeriod: mc.wave_period, waterF: cToF(mc.sea_surface_temperature),
+    wave: mc.wave_height, wavePeriod: mc.wave_period,
+    waterF: waterObs ? obs.waterF : cToF(mc.sea_surface_temperature),
+    waterSrc: waterObs ? (loc.obsName || 'observed') : (mc.sea_surface_temperature != null ? 'model' : null),
+    obsWind: obs ? obs.obsWind : null, obsGust: obs ? obs.obsGust : null, obsWindDir: obs ? obs.obsWindDir : null,
     activeWarning: warning ? warning.event : null,
   };
 
