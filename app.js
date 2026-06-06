@@ -51,7 +51,7 @@ async function getJSON(url, opts = {}) {
 async function fetchOpenMeteo(loc) {
   const base = 'https://api.open-meteo.com/v1/forecast?latitude=' + loc.lat + '&longitude=' + loc.lon +
     '&current=wind_speed_10m,wind_gusts_10m,wind_direction_10m,temperature_2m,visibility,weather_code' +
-    '&hourly=wind_speed_10m,wind_gusts_10m,wind_direction_10m,visibility,precipitation_probability,weather_code,temperature_2m' +
+    '&hourly=wind_speed_10m,wind_gusts_10m,wind_direction_10m,visibility,precipitation_probability,weather_code,temperature_2m,cloud_cover,surface_pressure' +
     '&wind_speed_unit=kn&temperature_unit=fahrenheit&timezone=America%2FNew_York&forecast_days=3';
   return getJSON(base);
 }
@@ -269,7 +269,9 @@ function renderCurrents(cp, loc) {
 
 function renderSun(loc) {
   const today = new Date();
-  const { sunrise, sunset } = sunTimes(today, loc.lat, loc.lon);
+  // anchor to local noon so we always get today's sun (sunTimes snaps to the
+  // nearest solar noon, which returns yesterday's times in the early morning)
+  const { sunrise, sunset } = sunTimes(new Date(today.getFullYear(), today.getMonth(), today.getDate(), 12), loc.lat, loc.lon);
   const now = today.getTime();
   const daylight = (sunset - sunrise) / 3600000;
   const remaining = sunset > now ? (sunset - now) / 3600000 : 0;
@@ -281,7 +283,8 @@ function renderSun(loc) {
 }
 
 /* ---------------- 48h hourly strip ---------------- */
-function renderHourly(om, marine) {
+function renderHourly(om, marine, fishing) {
+  const fScore = (fishing && fishing.scoreByMs) || {};
   const h = om.hourly;
   if (!h) { $('hourly-content').innerHTML = '<div class="text-slate-400 text-sm">Hourly data unavailable</div>'; return; }
   const waveByTime = {};
@@ -303,7 +306,9 @@ function renderHourly(om, marine) {
     const barPct = Math.min(100, (gust / maxGust) * 100);
     const barColor = gust >= TH.gustRed ? 'bg-red-500' : gust >= TH.gustYel ? 'bg-amber-400' : 'bg-emerald-500';
     const hr = time.toLocaleTimeString([], { weekday: 'short', hour: 'numeric' });
-    return `<div class="flex items-center gap-1.5 py-1.5 border-b border-black/5 dark:border-white/5 last:border-0">
+    const fs = fScore[o.t];
+    const accent = fs == null ? 'border-transparent' : fs >= 64 ? 'border-emerald-400' : fs >= 52 ? 'border-amber-400' : 'border-transparent';
+    return `<div class="flex items-center gap-1.5 py-1.5 pl-1.5 border-l-2 ${accent} border-b border-b-black/5 dark:border-b-white/5 last:border-b-0">
       <div class="w-16 shrink-0 text-xs text-slate-500">${hr}</div>
       <div class="w-12 shrink-0 text-xs"><span style="display:inline-block;transform:rotate(${dir + 180}deg)">↑</span> ${compass(dir)}</div>
       <div class="flex-1 min-w-0">
@@ -320,7 +325,11 @@ function renderHourly(om, marine) {
       <div class="w-16 shrink-0">Time</div><div class="w-12 shrink-0">Wind</div>
       <div class="flex-1 min-w-0">Gust</div><div class="w-16 text-right">kt</div>
       <div class="w-10 text-right">ft</div><div class="w-9 text-right">rain</div>
-    </div>${rows}`;
+    </div>${rows}
+    <div class="text-[10px] text-slate-400 mt-2 flex items-center gap-3">
+      <span class="flex items-center gap-1"><span class="inline-block w-2 h-3 rounded-sm bg-emerald-400"></span>prime</span>
+      <span class="flex items-center gap-1"><span class="inline-block w-2 h-3 rounded-sm bg-amber-400"></span>good fishing hour</span>
+    </div>`;
 }
 
 /* ---------------- NWS marine text forecast ---------------- */
@@ -394,6 +403,193 @@ function sunTimes(date, lat, lon) {
   return { sunrise: fromJulian(Jrise), sunset: fromJulian(Jset) };
 }
 
+/* ---------------- moon position (compact, SunCalc-derived, MIT) ---------------- */
+const M_RAD = Math.PI / 180, M_DAYMS = 86400000, M_J1970 = 2440588, M_J2000 = 2451545, M_E = M_RAD * 23.4397;
+const mToDays = (date) => date.valueOf() / M_DAYMS - 0.5 + M_J1970 - M_J2000;
+const mRA = (l, b) => Math.atan2(Math.sin(l) * Math.cos(M_E) - Math.tan(b) * Math.sin(M_E), Math.cos(l));
+const mDec = (l, b) => Math.asin(Math.sin(b) * Math.cos(M_E) + Math.cos(b) * Math.sin(M_E) * Math.sin(l));
+const mSidereal = (d, lw) => M_RAD * (280.16 + 360.9856235 * d) - lw;
+function mMoonCoords(d) {
+  const L = M_RAD * (218.316 + 13.176396 * d), Ma = M_RAD * (134.963 + 13.064993 * d), F = M_RAD * (93.272 + 13.229350 * d);
+  const l = L + M_RAD * 6.289 * Math.sin(Ma), b = M_RAD * 5.128 * Math.sin(F);
+  return { ra: mRA(l, b), dec: mDec(l, b) };
+}
+function moonAlt(date, lat, lon) { // radians above horizon
+  const lw = M_RAD * -lon, phi = M_RAD * lat, d = mToDays(date), c = mMoonCoords(d), H = mSidereal(d, lw) - c.ra;
+  return Math.asin(Math.sin(phi) * Math.sin(c.dec) + Math.cos(phi) * Math.cos(c.dec) * Math.cos(H));
+}
+function mSunCoords(d) {
+  const Ms = M_RAD * (357.5291 + 0.98560028 * d);
+  const C = M_RAD * (1.9148 * Math.sin(Ms) + 0.02 * Math.sin(2 * Ms) + 0.0003 * Math.sin(3 * Ms));
+  const L = Ms + C + M_RAD * 102.9372 + Math.PI;
+  return { ra: mRA(L, 0), dec: mDec(L, 0) };
+}
+function moonIllum(date) { // illuminated fraction 0(new)..1(full)
+  const d = mToDays(date), s = mSunCoords(d), m = mMoonCoords(d);
+  const elong = Math.acos(Math.sin(s.dec) * Math.sin(m.dec) + Math.cos(s.dec) * Math.cos(m.dec) * Math.cos(s.ra - m.ra));
+  return (1 - Math.cos(elong)) / 2;
+}
+function moonPhaseName() {
+  const f = moonIllum(new Date()), f2 = moonIllum(new Date(Date.now() + M_DAYMS)), waxing = f2 > f;
+  if (f < 0.04) return '🌑 New moon';
+  if (f > 0.96) return '🌕 Full moon';
+  if (Math.abs(f - 0.5) < 0.06) return waxing ? '🌓 First quarter' : '🌗 Last quarter';
+  const cresc = f < 0.5;
+  if (waxing) return cresc ? '🌒 Waxing crescent' : '🌔 Waxing gibbous';
+  return cresc ? '🌘 Waning crescent' : '🌖 Waning gibbous';
+}
+// Solunar events: major = lunar transit/anti-transit (altitude extrema),
+// minor = moonrise/set (altitude horizon crossings), scanned over the window.
+function solunarEvents(startMs, hours, lat, lon) {
+  const step = 1800000, N = Math.ceil(hours * 3600000 / step) + 2, alt = [];
+  for (let k = -1; k <= N; k++) { const t = startMs + k * step; alt.push({ t, a: moonAlt(new Date(t), lat, lon) }); }
+  const majors = [], minors = [];
+  for (let k = 1; k < alt.length - 1; k++) {
+    const p = alt[k - 1].a, c = alt[k].a, n = alt[k + 1].a;
+    if ((c - p) * (n - c) < 0) majors.push(alt[k].t);
+    if (p * c < 0) minors.push((alt[k - 1].t + alt[k].t) / 2);
+  }
+  return { majors, minors };
+}
+
+/* ---------------- fishing forecast ---------------- */
+// Triangular window: 1 at center, linear to 0 at center-before / center+after.
+function triWin(ms, center, before, after) {
+  if (ms < center) { const dd = center - ms; return dd <= before ? 1 - dd / before : 0; }
+  const dd = ms - center; return dd <= after ? 1 - dd / after : 0;
+}
+function nearestWin(ms, events, half) {
+  let best = Infinity;
+  for (const e of events) best = Math.min(best, Math.abs(ms - e));
+  return best <= half ? 1 - best / half : 0;
+}
+function windScore(kt) { // fishable-chop sweet spot ~5-12kt
+  if (kt == null) return 0.5;
+  if (kt >= 22) return 0;
+  if (kt >= 12) return 1 - (kt - 12) * (0.9 / 10);     // 12->1.0 .. 22->~0.1
+  if (kt >= 5) return 1;                                // 5-12 prime
+  return 0.6 + (kt / 5) * 0.4;                          // calm dip 0-5 -> 0.6..1.0
+}
+
+function computeFishing(om, tides, currentCp, loc) {
+  if (!om || !om.hourly) return null;
+  const H = om.hourly, lat = loc.lat, lon = loc.lon, now = Date.now();
+  const hours = H.time.map((t, i) => ({ t: new Date(t).getTime(), i }))
+    .filter((o) => o.t >= now - 3600000 && o.t <= now + 48 * 3600000);
+  if (!hours.length) return null;
+  const startMs = hours[0].t;
+
+  // sun times cached per calendar day — anchor to LOCAL NOON so sunTimes
+  // resolves the correct solar day (it otherwise snaps to the nearest noon,
+  // returning the previous day's sun for after-midnight hours).
+  const sunCache = {};
+  const sun = (ms) => {
+    const dt = new Date(ms), k = dt.toDateString();
+    if (!sunCache[k]) sunCache[k] = sunTimes(new Date(dt.getFullYear(), dt.getMonth(), dt.getDate(), 12), lat, lon);
+    return sunCache[k];
+  };
+
+  // tide turns (high/low)
+  const turns = (tides || []).map((p) => parseNoaa(p.t).getTime());
+  // current speed model: interpolate |velocity| between slack (~0) and max flood/ebb
+  const cur = (currentCp || []).map((c) => ({ t: parseNoaa(c.Time).getTime(), vel: Math.abs(c.Velocity_Major || 0) })).sort((a, b) => a.t - b.t);
+  const maxVel = Math.max(0.3, ...cur.map((c) => c.vel));
+  function currentSpeed(ms) {
+    if (cur.length < 2) return 0.5;
+    if (ms <= cur[0].t) return cur[0].vel / maxVel;
+    if (ms >= cur[cur.length - 1].t) return cur[cur.length - 1].vel / maxVel;
+    for (let k = 0; k < cur.length - 1; k++) if (ms >= cur[k].t && ms <= cur[k + 1].t) {
+      const f = (ms - cur[k].t) / (cur[k + 1].t - cur[k].t);
+      return (cur[k].vel + f * (cur[k + 1].vel - cur[k].vel)) / maxVel;
+    }
+    return 0.5;
+  }
+  const turnBonus = (ms) => { let b = Infinity; for (const t of turns) b = Math.min(b, Math.abs(ms - t)); const w = 90 * 60000; return b <= w ? 1 - b / w : 0; };
+
+  const ev = solunarEvents(startMs, 48, lat, lon);
+  const illum = moonIllum(new Date(now));
+  const phaseFactor = 0.7 + 0.3 * Math.cos(2 * Math.PI * illum); // new & full boost; quarters lower
+
+  const data = hours.map((o) => {
+    const ms = o.t, i = o.i, s = sun(ms);
+    const isDay = ms > s.sunrise && ms < s.sunset;
+    const dawn = triWin(ms, s.sunrise, 60 * 60000, 90 * 60000);
+    const dusk = triWin(ms, s.sunset, 90 * 60000, 60 * 60000);
+    let light = Math.max(dawn, dusk, isDay ? 0 : 0.45);
+    const cloud = H.cloud_cover ? H.cloud_cover[i] : 0;
+    if (isDay && cloud >= 70) light = Math.max(light, 0.5);
+
+    const major = nearestWin(ms, ev.majors, 60 * 60000), minor = nearestWin(ms, ev.minors, 45 * 60000);
+    const solunar = Math.max(major, 0.6 * minor, 0.15) * phaseFactor;
+
+    const speed = currentSpeed(ms), turn = turnBonus(ms);
+    const tide = 0.6 * speed + 0.4 * turn;
+    const wind = windScore(H.wind_speed_10m[i]);
+
+    let pres = 0.5;
+    if (H.surface_pressure) { const dp = H.surface_pressure[i] - H.surface_pressure[Math.max(0, i - 4)]; pres = dp <= -2 ? 1 : dp <= -0.5 ? 0.8 : dp < 0.5 ? 0.55 : dp < 2 ? 0.35 : 0.2; }
+
+    let score = 100 * (0.30 * tide + 0.25 * light + 0.20 * solunar + 0.15 * wind + 0.10 * pres);
+    if (H.wind_gusts_10m[i] >= TH.gustRed) score = Math.min(score, 25); // unfishable/unsafe cap
+
+    const reasons = [];
+    if (dawn > 0.5) reasons.push('dawn'); else if (dusk > 0.5) reasons.push('dusk'); else if (!isDay) reasons.push('night');
+    if (turn > 0.5) reasons.push('tide turn'); else if (speed > 0.6) reasons.push('strong current');
+    if (major > 0.4) reasons.push('major solunar'); else if (minor > 0.4) reasons.push('minor solunar');
+    if (pres >= 0.8) reasons.push('falling barometer');
+    if (isDay && cloud >= 70 && dawn < 0.5 && dusk < 0.5) reasons.push('overcast');
+    if (wind < 0.25) reasons.push('too windy');
+    return { ms, i, score, reasons };
+  });
+
+  // group consecutive qualifying hours into windows
+  const windows = [];
+  let w = null;
+  for (const h of data) {
+    if (h.score >= 52 && !h.reasons.includes('too windy')) {
+      if (!w) w = { start: h.ms, end: h.ms, peak: h.score, reasons: new Set(h.reasons) };
+      else { w.end = h.ms; w.peak = Math.max(w.peak, h.score); h.reasons.forEach((r) => w.reasons.add(r)); }
+    } else if (w) { windows.push(w); w = null; }
+  }
+  if (w) windows.push(w);
+  windows.sort((a, b) => b.peak - a.peak);
+
+  const scoreByMs = {};
+  data.forEach((h) => { scoreByMs[h.ms] = h.score; });
+  return { scoreByMs, windows: windows.slice(0, 3), illum };
+}
+
+function dayLabel(ms) {
+  const d = new Date(ms), t = new Date(), tom = new Date(t.getTime() + M_DAYMS);
+  if (d.toDateString() === t.toDateString()) return 'Today';
+  if (d.toDateString() === tom.toDateString()) return 'Tomorrow';
+  return d.toLocaleDateString([], { weekday: 'short' });
+}
+
+function renderFishing(f) {
+  const el = $('fishing-content');
+  if (!f) { el.innerHTML = '<div class="text-sm text-slate-400">Fishing outlook unavailable</div>'; return; }
+  const stars = (n) => `<span class="text-amber-500">${'★'.repeat(n)}</span><span class="text-slate-300 dark:text-slate-600">${'★'.repeat(5 - n)}</span>`;
+  // realistic peaks: ~45 poor, ~60 decent, ~72 good, ~82 excellent
+  const starCount = (p) => (p >= 74 ? 5 : p >= 64 ? 4 : p >= 55 ? 3 : p >= 45 ? 2 : 1);
+  const rows = f.windows.map((w) => {
+    const n = starCount(w.peak);
+    let rs = [...w.reasons].filter((r) => r !== 'too windy');
+    if (rs.includes('dawn') || rs.includes('dusk')) rs = rs.filter((r) => r !== 'night'); // dawn/dusk supersede night
+    const reasons = rs.slice(0, 3).join(' · ') || 'favorable mix';
+    return `<div class="py-1.5 border-b border-black/5 dark:border-white/5 last:border-0">
+      <div class="flex items-center gap-2">
+        <span class="text-sm shrink-0">${stars(n)}</span>
+        <span class="text-sm font-semibold">${dayLabel(w.start)} ${fmtTime(new Date(w.start))}–${fmtTime(new Date(w.end + 3600000))}</span>
+      </div>
+      <div class="text-xs text-slate-500 dark:text-slate-400 capitalize mt-0.5">${reasons}</div>
+    </div>`;
+  }).join('') || '<div class="text-sm text-slate-400">No standout windows in the next 48h — fish moving water around the tide changes.</div>';
+  el.innerHTML = `
+    <div class="text-[11px] uppercase tracking-wide text-slate-400 font-semibold mb-2">🎣 Fishing Outlook · ${moonPhaseName()}</div>
+    ${rows}`;
+}
+
 /* ---------------- orchestration ---------------- */
 function spinRefresh(on) {
   const el = $('refresh-icon');
@@ -439,7 +635,9 @@ async function loadAll() {
   renderNow(d);
   renderTides(tides, loc);
   renderCurrents(currentCp, loc);
-  if (om) renderHourly(om, marine);
+  const fishing = computeFishing(om, tides, currentCp, loc);
+  renderFishing(fishing);
+  if (om) renderHourly(om, marine, fishing);
 
   state.data = { d, at: Date.now() };
   try { localStorage.setItem('mw-cache-' + loc.id, JSON.stringify({ at: Date.now(), d })); } catch (e) {}
