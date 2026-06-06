@@ -1,6 +1,6 @@
 /* Marine Weather service worker — offline app shell + last-known data.
    Bump CACHE when shell files change to force an update. */
-const CACHE = 'marine-weather-v7';
+const CACHE = 'marine-weather-v8';
 const SHELL = [
   './',
   './index.html',

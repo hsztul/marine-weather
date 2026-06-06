@@ -64,7 +64,7 @@ async function fetchMarine(loc) {
   return getJSON(url).catch(() => null); // marine model can be sparse; degrade gracefully
 }
 
-async function fetchTides(loc, days = 3) {
+async function fetchTides(loc, days = 8) {
   const begin = ymd(new Date()), end = ymd(new Date(Date.now() + days * 86400000));
   const url = 'https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=predictions&datum=MLLW' +
     '&station=' + loc.tide + '&time_zone=lst_ldt&units=english&interval=hilo&format=json' +
@@ -185,17 +185,42 @@ function renderAlerts(alerts) {
 
 function renderTides(preds, loc) {
   const now = new Date();
-  const upcoming = preds.map((p) => ({ when: parseNoaa(p.t), type: p.type, v: parseFloat(p.v) }))
-    .filter((p) => p.when > now).slice(0, 4);
-  const rows = upcoming.map((p) => `
-    <div class="flex items-center justify-between py-1">
+  const all = preds.map((p) => ({ when: parseNoaa(p.t), type: p.type, v: parseFloat(p.v) })).filter((p) => p.when > now);
+  if (!all.length) {
+    $('tides-card').innerHTML = `<div class="text-[11px] uppercase tracking-wide text-slate-400 font-semibold mb-1">Tides · ${loc.tideName}</div><div class="text-sm text-slate-400">Tide data unavailable</div>`;
+    return;
+  }
+  const row = (p) => `<div class="flex items-center justify-between py-1">
       <span class="text-sm">${p.type === 'H' ? '🔺 High' : '🔻 Low'}</span>
       <span class="text-sm font-medium">${fmtTime(p.when)}</span>
       <span class="text-xs text-slate-400">${p.v.toFixed(1)} ft</span>
-    </div>`).join('') || '<div class="text-sm text-slate-400">Tide data unavailable</div>';
+    </div>`;
+  const compact = all.slice(0, 4).map(row).join('');
+
+  // 7-day view grouped by day
+  const byDay = {};
+  all.forEach((p) => { const k = p.when.toDateString(); (byDay[k] = byDay[k] || []).push(p); });
+  const week = Object.keys(byDay).slice(0, 7).map((k) => {
+    const evs = byDay[k];
+    return `<div class="mt-3 first:mt-2">
+      <div class="text-xs font-semibold text-slate-500 dark:text-slate-400 mb-0.5">${dayLabel(evs[0].when.getTime())} <span class="font-normal text-slate-400">${evs[0].when.toLocaleDateString([], { month: 'short', day: 'numeric' })}</span></div>
+      ${evs.map(row).join('')}</div>`;
+  }).join('');
+
   $('tides-card').innerHTML = `
     <div class="text-[11px] uppercase tracking-wide text-slate-400 font-semibold mb-1">Tides · ${loc.tideName}</div>
-    ${rows}`;
+    <div id="tides-compact">${compact}</div>
+    <div id="tides-week" class="hidden">${week}</div>
+    <button id="tides-toggle" class="text-xs font-medium text-blue-600 dark:text-blue-400 mt-2 flex items-center gap-1">
+      <span id="tides-toggle-label">7-day tides</span>
+      <svg id="tides-chevron" viewBox="0 0 24 24" class="h-4 w-4 transition-transform" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+    </button>`;
+  $('tides-toggle').addEventListener('click', () => {
+    const showWeek = $('tides-week').classList.toggle('hidden') === false;
+    $('tides-compact').classList.toggle('hidden', showWeek);
+    $('tides-toggle-label').textContent = showWeek ? 'Next tides' : '7-day tides';
+    $('tides-chevron').style.transform = showWeek ? 'rotate(180deg)' : '';
+  });
 }
 
 function renderCurrents(cp, loc) {
@@ -758,7 +783,7 @@ function buildLocationSelect() {
 
 function setupTabs() {
   const buttons = document.querySelectorAll('.tab-btn');
-  const panels = ['hourly', 'fish', 'marine', 'windy', 'radar'];
+  const panels = ['hourly', 'marine', 'windy', 'radar', 'fish'];
   const ACTIVE = ['bg-blue-600', 'text-white'];
   const IDLE = ['text-slate-500', 'hover:bg-black/5', 'dark:hover:bg-white/10'];
   function show(name) {
