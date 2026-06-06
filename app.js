@@ -123,56 +123,7 @@ function ymd(d) {
 // NOAA returns "YYYY-MM-DD HH:MM" in local station time; parse as local clock time
 function parseNoaa(t) { return new Date(t.replace(' ', 'T')); }
 
-/* ---------------- go / no-go engine ---------------- */
-function computeVerdict(d) {
-  const reasons = [];
-  let level = 0; // 0 go, 1 caution, 2 no-go
-
-  const wind = d.wind, gust = d.gust, wave = d.wave, visNm = d.visNm, code = d.weatherCode;
-
-  const bump = (lvl, txt) => { level = Math.max(level, lvl); reasons.push({ lvl, txt }); };
-
-  if (gust != null) {
-    if (gust >= TH.gustRed) bump(2, `Gusts ${round(gust)} kt`);
-    else if (gust >= TH.gustYel) bump(1, `Gusts ${round(gust)} kt`);
-  }
-  if (wind != null) {
-    if (wind >= TH.windRed) bump(2, `Wind ${round(wind)} kt`);
-    else if (wind >= TH.windYel) bump(1, `Wind ${round(wind)} kt`);
-  }
-  if (wave != null) {
-    if (wave >= TH.waveRed) bump(2, `Seas ${round(wave, 1)} ft`);
-    else if (wave >= TH.waveYel) bump(1, `Seas ${round(wave, 1)} ft`);
-  }
-  if (visNm != null) {
-    if (visNm < TH.visRedNm) bump(2, `Vis ${round(visNm, 1)} nm (fog)`);
-    else if (visNm < TH.visYelNm) bump(1, `Vis ${round(visNm, 1)} nm`);
-  }
-  if ([95, 96, 99].includes(code)) bump(2, 'Thunderstorms');
-  if (d.activeWarning) bump(2, d.activeWarning);
-
-  return { level, reasons };
-}
-
 /* ---------------- rendering ---------------- */
-const VERDICT_STYLES = [
-  { bg: 'bg-emerald-600', label: 'GO', emoji: '⛵️', sub: 'Conditions within small-craft limits' },
-  { bg: 'bg-amber-500',   label: 'CAUTION', emoji: '⚠️', sub: 'Marginal — watch conditions closely' },
-  { bg: 'bg-red-600',     label: 'NO-GO', emoji: '🛑', sub: 'Small-craft conditions or worse' },
-];
-
-function renderVerdict(v) {
-  const s = VERDICT_STYLES[v.level];
-  const el = $('verdict');
-  el.className = 'rounded-2xl p-5 mb-3 text-white shadow-sm transition-colors ' + s.bg;
-  $('verdict-label').textContent = s.label;
-  $('verdict-sub').textContent = s.sub;
-  $('verdict-emoji').textContent = s.emoji;
-  const chips = v.reasons.length
-    ? v.reasons.map((r) => `<span class="text-xs font-medium bg-white/20 rounded-full px-2 py-0.5">${r.txt}</span>`).join('')
-    : `<span class="text-xs font-medium bg-white/20 rounded-full px-2 py-0.5">All clear</span>`;
-  $('verdict-reasons').innerHTML = chips;
-}
 
 function statCard(label, value, unit, sub) {
   return `<div class="rounded-2xl bg-white dark:bg-slate-800 shadow-sm ring-1 ring-black/5 dark:ring-white/10 p-3">
@@ -494,8 +445,9 @@ function buildFishingData(om, tides, currentCp, loc, horizonHrs) {
     return sunCache[k];
   };
 
-  // tide turns (high/low)
-  const turns = (tides || []).map((p) => parseNoaa(p.t).getTime());
+  // tide turns (high/low) — keep type so windows can show the corresponding tide
+  const tideEvents = (tides || []).map((p) => ({ t: parseNoaa(p.t).getTime(), type: p.type }));
+  const turns = tideEvents.map((e) => e.t);
   // current speed model: interpolate |velocity| between slack (~0) and flood/ebb peaks.
   // Normalize by the AVERAGE peak (horizon-independent) so near-term scores don't
   // shift when the fetch window includes stronger spring tides — capped at 1.
@@ -551,7 +503,7 @@ function buildFishingData(om, tides, currentCp, loc, horizonHrs) {
     return { ms, i, score, reasons };
   });
 
-  return { data, illum };
+  return { data, illum, tideEvents };
 }
 
 // Group consecutive qualifying hours into fishing windows, best peak first.
@@ -568,19 +520,36 @@ function findWindows(data, minScore) {
   return windows.sort((a, b) => b.peak - a.peak);
 }
 
+// Attach the high/low tide change(s) that drive each window's rating
+// (those within ±90 min of the window; else the nearest one for context).
+function attachTides(windows, tideEvents) {
+  if (!tideEvents || !tideEvents.length) return windows;
+  const pad = 90 * 60000;
+  for (const w of windows) {
+    let hits = tideEvents.filter((e) => e.t >= w.start - pad && e.t <= w.end + pad);
+    if (!hits.length) {
+      const c = (w.start + w.end) / 2;
+      hits = [tideEvents.reduce((a, b) => (Math.abs(b.t - c) < Math.abs(a.t - c) ? b : a))];
+    }
+    w.tides = hits.slice(0, 2);
+  }
+  return windows;
+}
+
 function computeFishing(om, tides, currentCp, loc) {
   const built = buildFishingData(om, tides, currentCp, loc, 48);
   if (!built) return null;
   const scoreByMs = {};
   built.data.forEach((h) => { scoreByMs[h.ms] = h.score; });
-  return { scoreByMs, windows: findWindows(built.data, 52).slice(0, 3), illum: built.illum };
+  const windows = attachTides(findWindows(built.data, 52), built.tideEvents).slice(0, 3);
+  return { scoreByMs, windows, illum: built.illum };
 }
 
 // Multi-day outlook for the Fish tab — one entry per calendar day.
 function computeFishingDaily(om, tides, currentCp, loc) {
   const built = buildFishingData(om, tides, currentCp, loc, 16 * 24);
   if (!built) return null;
-  const windows = findWindows(built.data, 52);
+  const windows = attachTides(findWindows(built.data, 52), built.tideEvents);
   const days = {};
   for (const h of built.data) {
     const k = new Date(h.ms).toDateString();
@@ -598,6 +567,10 @@ function dayLabel(ms) {
   if (d.toDateString() === t.toDateString()) return 'Today';
   if (d.toDateString() === tom.toDateString()) return 'Tomorrow';
   return d.toLocaleDateString([], { weekday: 'short' });
+}
+// The high/low tide change(s) that line up with a window's rating.
+function tideStr(w) {
+  return (w.tides || []).map((e) => (e.type === 'H' ? '🔺 High' : '🔻 Low') + ' ' + fmtTime(new Date(e.t))).join(' · ');
 }
 
 function renderFishing(f) {
@@ -617,6 +590,7 @@ function renderFishing(f) {
         <span class="text-sm font-semibold">${dayLabel(w.start)} ${fmtTime(new Date(w.start))}–${fmtTime(new Date(w.end + 3600000))}</span>
       </div>
       <div class="text-xs text-slate-500 dark:text-slate-400 capitalize mt-0.5">${reasons}</div>
+      ${w.tides && w.tides.length ? `<div class="text-xs text-sky-600 dark:text-sky-400 mt-0.5">${tideStr(w)}</div>` : ''}
     </div>`;
   }).join('') || '<div class="text-sm text-slate-400">No standout windows in the next 48h — fish moving water around the tide changes.</div>';
   el.innerHTML = `
@@ -651,21 +625,18 @@ async function loadAll() {
   // Build the unified "now" snapshot
   const cur = om && om.current ? om.current : {};
   const mc = marine && marine.current ? marine.current : {};
-  const warning = alerts.find((a) => /warning/i.test(a.event));
   // Prefer observed water temp from the CO-OPS station; fall back to model SST.
   const waterObs = obs && obs.waterF != null;
   const d = {
     wind: cur.wind_speed_10m, gust: cur.wind_gusts_10m, windDir: cur.wind_direction_10m,
-    airF: cur.temperature_2m, visNm: mToNm(cur.visibility), weatherCode: cur.weather_code,
+    airF: cur.temperature_2m, visNm: mToNm(cur.visibility),
     wave: mc.wave_height, wavePeriod: mc.wave_period,
     waterF: waterObs ? obs.waterF : cToF(mc.sea_surface_temperature),
     waterSrc: waterObs ? (loc.obsName || 'observed') : (mc.sea_surface_temperature != null ? 'model' : null),
     obsWind: obs ? obs.obsWind : null, obsGust: obs ? obs.obsGust : null, obsWindDir: obs ? obs.obsWindDir : null,
-    activeWarning: warning ? warning.event : null,
   };
 
   renderAlerts(alerts);
-  renderVerdict(computeVerdict(d));
   renderNow(d);
   renderTides(tides, loc);
   renderCurrents(currentCp, loc);
@@ -737,7 +708,8 @@ function renderFishTab(daily) {
   const fmtWin = (w) => {
     let rs = [...w.reasons].filter((r) => r !== 'too windy');
     if (rs.includes('dawn') || rs.includes('dusk')) rs = rs.filter((r) => r !== 'night');
-    return `${fmtTime(new Date(w.start))}–${fmtTime(new Date(w.end + 3600000))} <span class="text-slate-400">· ${rs.slice(0, 2).join(' · ') || 'good mix'}</span>`;
+    const tide = w.tides && w.tides.length ? `<span class="text-sky-600 dark:text-sky-400"> · ${tideStr(w)}</span>` : '';
+    return `${fmtTime(new Date(w.start))}–${fmtTime(new Date(w.end + 3600000))} <span class="text-slate-400">· ${rs.slice(0, 2).join(' · ') || 'good mix'}</span>${tide}`;
   };
   const rows = daily.days.map((d, idx) => {
     const n = starCount(d.peak);
