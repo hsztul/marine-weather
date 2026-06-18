@@ -127,7 +127,7 @@ function parseNoaa(t) { return new Date(t.replace(' ', 'T')); }
 
 function statCard(label, value, unit, sub) {
   return `<div class="rounded-2xl bg-white dark:bg-slate-800 shadow-sm ring-1 ring-black/5 dark:ring-white/10 p-3">
-    <div class="text-[11px] uppercase tracking-wide text-slate-400 font-semibold">${label}</div>
+    <div class="text-[0.6875rem] uppercase tracking-wide text-slate-400 font-semibold">${label}</div>
     <div class="mt-0.5 text-2xl font-bold leading-none">${value ?? '—'}<span class="text-sm font-medium text-slate-400 ml-1">${value != null ? unit : ''}</span></div>
     ${sub ? `<div class="text-xs text-slate-500 dark:text-slate-400 mt-1">${sub}</div>` : ''}
   </div>`;
@@ -187,7 +187,7 @@ function renderTides(preds, loc) {
   const now = new Date();
   const all = preds.map((p) => ({ when: parseNoaa(p.t), type: p.type, v: parseFloat(p.v) })).filter((p) => p.when > now);
   if (!all.length) {
-    $('tides-card').innerHTML = `<div class="text-[11px] uppercase tracking-wide text-slate-400 font-semibold mb-1">Tides · ${loc.tideName}</div><div class="text-sm text-slate-400">Tide data unavailable</div>`;
+    $('tides-card').innerHTML = `<div class="text-[0.6875rem] uppercase tracking-wide text-slate-400 font-semibold mb-1">Tides · ${loc.tideName}</div><div class="text-sm text-slate-400">Tide data unavailable</div>`;
     return;
   }
   const row = (p) => `<div class="flex items-center justify-between py-1">
@@ -208,7 +208,7 @@ function renderTides(preds, loc) {
   }).join('');
 
   $('tides-card').innerHTML = `
-    <div class="text-[11px] uppercase tracking-wide text-slate-400 font-semibold mb-1">Tides · ${loc.tideName}</div>
+    <div class="text-[0.6875rem] uppercase tracking-wide text-slate-400 font-semibold mb-1">Tides · ${loc.tideName}</div>
     <div id="tides-compact">${compact}</div>
     <div id="tides-week" class="hidden">${week}</div>
     <button id="tides-toggle" class="text-xs font-medium text-blue-600 dark:text-blue-400 mt-2 flex items-center gap-1">
@@ -241,7 +241,7 @@ function renderCurrents(cp, loc) {
       <span class="text-sm font-medium">${fmtTime(c.when)}</span></div>`;
   }).join('');
   card.innerHTML = `
-    <div class="text-[11px] uppercase tracking-wide text-slate-400 font-semibold mb-1">Tidal Current · ${loc.currentName || 'Local'}</div>
+    <div class="text-[0.6875rem] uppercase tracking-wide text-slate-400 font-semibold mb-1">Tidal Current · ${loc.currentName || 'Local'}</div>
     ${items}`;
 }
 
@@ -254,7 +254,7 @@ function renderSun(loc) {
   const daylight = (sunset - sunrise) / 3600000;
   const remaining = sunset > now ? (sunset - now) / 3600000 : 0;
   $('sun-card').innerHTML = `
-    <div class="text-[11px] uppercase tracking-wide text-slate-400 font-semibold mb-1">Daylight</div>
+    <div class="text-[0.6875rem] uppercase tracking-wide text-slate-400 font-semibold mb-1">Daylight</div>
     <div class="flex items-center justify-between py-1"><span class="text-sm">🌅 Sunrise</span><span class="text-sm font-medium">${fmtTime(new Date(sunrise))}</span></div>
     <div class="flex items-center justify-between py-1"><span class="text-sm">🌇 Sunset</span><span class="text-sm font-medium">${fmtTime(new Date(sunset))}</span></div>
     <div class="text-xs text-slate-400 mt-1">${daylight.toFixed(1)} h of daylight${remaining > 0 ? ` · ${remaining.toFixed(1)} h left` : ' · after sunset'}</div>`;
@@ -299,12 +299,12 @@ function renderHourly(om, marine, fishing) {
   }).join('');
 
   $('hourly-content').innerHTML = `
-    <div class="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-slate-400 font-semibold pb-1 border-b border-black/10 dark:border-white/10">
+    <div class="flex items-center gap-1.5 text-[0.625rem] uppercase tracking-wide text-slate-400 font-semibold pb-1 border-b border-black/10 dark:border-white/10">
       <div class="w-16 shrink-0">Time</div><div class="w-12 shrink-0">Wind</div>
       <div class="flex-1 min-w-0">Gust</div><div class="w-16 text-right">kt</div>
       <div class="w-10 text-right">ft</div><div class="w-9 text-right">rain</div>
     </div>${rows}
-    <div class="text-[10px] text-slate-400 mt-2 flex items-center gap-3">
+    <div class="text-[0.625rem] text-slate-400 mt-2 flex items-center gap-3">
       <span class="flex items-center gap-1"><span class="inline-block w-2 h-3 rounded-sm bg-emerald-400"></span>prime</span>
       <span class="flex items-center gap-1"><span class="inline-block w-2 h-3 rounded-sm bg-amber-400"></span>good fishing hour</span>
     </div>`;
@@ -619,7 +619,7 @@ function renderFishing(f) {
     </div>`;
   }).join('') || '<div class="text-sm text-slate-400">No standout windows in the next 48h — fish moving water around the tide changes.</div>';
   el.innerHTML = `
-    <div class="text-[11px] uppercase tracking-wide text-slate-400 font-semibold mb-2">🎣 Fishing Outlook · ${moonPhaseName()}</div>
+    <div class="text-[0.6875rem] uppercase tracking-wide text-slate-400 font-semibold mb-2">🎣 Fishing Outlook · ${moonPhaseName()}</div>
     ${rows}`;
 }
 
@@ -754,9 +754,9 @@ function renderFishTab(daily) {
     </div>`;
   }).join('');
   el.innerHTML = `
-    <div class="text-[11px] uppercase tracking-wide text-slate-400 font-semibold mb-2">🎣 ${FISH_DAYS}-Day Fishing Outlook · ${state.loc.name}</div>
+    <div class="text-[0.6875rem] uppercase tracking-wide text-slate-400 font-semibold mb-2">🎣 ${FISH_DAYS}-Day Fishing Outlook · ${state.loc.name}</div>
     ${rows}
-    <div class="text-[11px] text-slate-400 mt-3 leading-relaxed">Tides &amp; moon are reliable the whole way out; wind &amp; barometer accuracy fades after ~7 days (later days dimmed). Best window shown per day.</div>`;
+    <div class="text-[0.6875rem] text-slate-400 mt-3 leading-relaxed">Tides &amp; moon are reliable the whole way out; wind &amp; barometer accuracy fades after ~7 days (later days dimmed). Best window shown per day.</div>`;
 }
 
 /* ---------------- UI wiring ---------------- */
@@ -829,6 +829,17 @@ function setupTheme() {
   });
 }
 
+const FONT_SIZES = [16, 18, 20]; // default, large, extra-large (px on <html>)
+function setupTextSize() {
+  $('textsize-btn').addEventListener('click', () => {
+    const cur = parseInt(localStorage.getItem('mw-fontsize') || '16', 10);
+    const i = FONT_SIZES.indexOf(cur);
+    const next = FONT_SIZES[(i + 1) % FONT_SIZES.length];
+    document.documentElement.style.fontSize = next + 'px';
+    localStorage.setItem('mw-fontsize', String(next));
+  });
+}
+
 function setupGeo() {
   $('geo-btn').addEventListener('click', () => {
     if (!navigator.geolocation) return;
@@ -858,6 +869,7 @@ function boot() {
   buildLocationSelect();
   setupTabs();
   setupTheme();
+  setupTextSize();
   setupGeo();
   $('refresh-btn').addEventListener('click', loadAll);
   loadAll();
